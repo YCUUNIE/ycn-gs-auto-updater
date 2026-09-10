@@ -22,7 +22,7 @@ Inside the ~3.9MB bundle, units live in a variable `Nb=[...]` and equips in `au=
 
 **3. Parse it**
 
-This is the tricky part. The site's code is **minified** — compressed in ways hand-written files never are:
+This is the tricky part. The site's code is **minified** compressed in ways hand-written files never are:
 
 - Floats written as `.52` instead of `0.52`
 - Numbers like `3e3` instead of `3000`
@@ -57,7 +57,7 @@ The code runs 24/7, checks every 60 minutes, forever, it only writes when the da
 
 ---
 
-**The one-sentence version:** it downloads the site's public JavaScript bundle, pulls the unit/equip arrays out of it, checks the data is sane in three different ways, and only then swaps it into the data files — backing up the old ones first.
+**The one-sentence version:** it downloads the site's public JavaScript bundle, pulls the unit/equip arrays out of it, checks the data is sane in three different ways, and only then swaps it into the data files. 
 
 ### See it yourself in DevTools
 
@@ -65,7 +65,7 @@ Want to look at the exact file the script reads? It's just a normal request in y
 
 1. Open [grandsummoners.info](https://www.grandsummoners.info) in your browser.
 2. Press **F12** (or right-click the page → **Inspect**) to open DevTools, then click the **Network** tab.
-3. Refresh the page so the requests appear, and find **`main.<hash>.js`** in the list — e.g. `main.24d01070.js`. (Clicking the **JS** filter button makes it easier to spot.)
+3. Refresh the page so the requests appear, and find **`main.<hash>.js`** in the list e.g. `main.24d01070.js`. (Clicking the **JS** filter button makes it easier to spot.)
 4. Click that row and open the **Response** tab — that's the full bundle, the same one the script downloads. It's minified (one long line of compressed code), which is why it's hard to read directly. Search it (`Ctrl+F`) for `Nb=` and you'll land right on the unit data array; `au=` is the equips.
 
 The **Headers** tab shows the same request URL the script builds from the homepage HTML: `https://www.grandsummoners.info/static/js/main.<hash>.js`.
