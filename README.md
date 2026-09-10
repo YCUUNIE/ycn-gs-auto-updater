@@ -39,9 +39,9 @@ Nothing gets written until the fresh data passes every check:
 - Both arrays parsed to non-empty lists
 - Every record has an id and a name
 - The count is within 70% of what's already on disk (a sudden collapse = a partial download or the site broke → refuse)
-- The generated file is **round-tripped back through the parser** to confirm the same record count — if it couldn't be loaded again, it's rejected
+- The generated file is **round-tripped back through the parser** to confirm the same record count if it couldn't be loaded again, it's rejected
 
-**5. Write — carefully**
+**5. The script will write carefully**
 
 Only *then* does it:
 
