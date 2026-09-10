@@ -30,7 +30,7 @@ This is the tricky part. The site's code is **minified** compressed in ways hand
 - Unicode as `\u03a9` (that's the `Ω` in "EDEN-typeΩ"), including split emoji
 - One unit even built piece-by-piece with a helper function instead of written plainly
 
-The script reuses **the parser in this repo** (`core/js_parser.py`) and teaches it to understand all those minified forms — without changing the parser itself. So whatever the script can read, anything using `core/game_data.py` can too.
+The script reuses **the parser in this repo** (`core/js_parser.py`) and teaches it to understand all those minified forms without changing the parser itself. So whatever the script can read, anything using `core/game_data.py` can too.
 
 **4. Validate before touching anything — this is the safety net**
 
