@@ -3,7 +3,6 @@ import re
 import sys
 import json
 import time
-import shutil
 import argparse
 import urllib.request
 import urllib.error
@@ -212,6 +211,9 @@ TARGETS = [
 # (catches partial downloads / the site dropping data).
 MIN_RATIO_OF_CURRENT = 0.7
 
+# How often `--loop` re-checks when no interval is given: once every 24 hours.
+DEFAULT_LOOP_MINUTES = 1440
+
 
 def _http_get(url: str, timeout: int = 60) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
@@ -320,14 +322,22 @@ def parse_array(literal: str) -> list:
     return parser.parse_array()
 
 
-def current_record_count(path: str, const_name: str) -> int:
-    # Records in the existing file (0 if missing/unreadable).
+def read_current_file(path: str, const_name: str):
+    # What's already on disk: (record count, set of names). The two are not
+    # interchangeable - names are deduplicated, and equips ship 14 entries
+    # called "???" plus a repeated name, so the name set runs ~14 short of the
+    # record count on an unchanged file. The count is what gets reported and
+    # validated; the names are only for diffing which entries came and went.
+    # (0, empty set) if the file is missing or unreadable.
     if not os.path.exists(path):
-        return 0
+        return 0, set()
     try:
-        return len(js_parser.parse_js_data_file(path, const_name))
+        recs = js_parser.parse_js_data_file(path, const_name)
     except Exception:
-        return 0
+        return 0, set()
+    names = {r["name"].strip() for r in recs
+             if isinstance(r.get("name"), str) and r["name"].strip()}
+    return len(recs), names
 
 
 def validate(records, min_expected: int, current_count: int, label: str) -> None:
@@ -407,7 +417,7 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
     # Parse and validate both files before writing either, so we never leave a
     # fresh unit file beside a stale equip file.
     details = []
-    staged = []  # (out_path, bak_path, text, const_name, count, current)
+    staged = []  # (out_path, text, const_name, count, current, old_names, new_names)
     for signature, out_file, const_name, min_expected in TARGETS:
         out_path = os.path.join(target_dir, out_file)
         try:
@@ -420,7 +430,7 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
             return {"ok": False, "changed": False, "summary": f"{out_file}: parse failed",
                     "details": details, "error": f"{out_file}: {e}"}
 
-        current = current_record_count(out_path, const_name)
+        current, old_names = read_current_file(out_path, const_name)
         try:
             validate(records, min_expected, current, out_file)
         except RuntimeError as e:
@@ -434,12 +444,15 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
             return {"ok": False, "changed": False, "summary": f"{out_file}: round-trip failed",
                     "details": details, "error": str(e)}
 
+        new_names = {r["name"].strip() for r in records
+                     if isinstance(r.get("name"), str) and r["name"].strip()}
         details.append(f"{out_file}: {len(records)} records (was {current})")
-        staged.append((out_path, out_path + ".bak", text, const_name, len(records), current))
+        staged.append((out_path, text, const_name, len(records), current, old_names, new_names))
 
     if dry_run:
         return {"ok": True, "changed": False,
-                "summary": "Dry run: validated, wrote nothing.", "details": details, "error": None}
+                "summary": "Dry run: validated, wrote nothing.", "details": details,
+                "changes": [], "error": None}
 
     # Write only files whose content actually changed. Each file is written
     # to a temp name and swapped in with os.replace, so a crash or disk-full
@@ -447,8 +460,12 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
     # where one file is updated but its sibling isn't shrinks to the instant
     # between the two renames. Any write failure returns an error dict
     # instead of raising, keeping run_update's never-raises contract.
+    #
+    # No .bak copies: every byte here is re-fetchable from the site on demand,
+    # and a stale backup beside a live data file is a trap, not a safety net.
     written = []
-    for out_path, bak_path, text, const_name, count, current in staged:
+    changes = []  # readable per-file "what changed" lines
+    for out_path, text, const_name, count, current, old_names, new_names in staged:
         existing = None
         if os.path.exists(out_path):
             try:
@@ -463,8 +480,6 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(text)
-            if os.path.exists(out_path):
-                shutil.copy2(out_path, bak_path)
             os.replace(tmp_path, out_path)
         except OSError as e:
             if os.path.exists(tmp_path):
@@ -474,7 +489,7 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
                     pass
             return {"ok": False, "changed": bool(written),
                     "summary": f"{os.path.basename(out_path)}: write failed",
-                    "details": details, "error": str(e)}
+                    "details": details, "changes": changes, "error": str(e)}
 
         cache_path = out_path + ".cache.json"
         if os.path.exists(cache_path):
@@ -484,13 +499,39 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
                 pass
         written.append(os.path.basename(out_path))
 
+        # Name the entries that were added or removed. old_names is empty on a
+        # first-ever run, where there is nothing meaningful to diff against.
+        kind = "unit" if const_name == "UnitInformation" else "equip"
+        if old_names:
+            added = sorted(new_names - old_names)
+            removed = sorted(old_names - new_names)
+            if added or removed:
+                parts = []
+                if added:
+                    parts.append(f"added {len(added)} {kind}(s): {_name_list(added)}")
+                if removed:
+                    parts.append(f"removed {len(removed)} {kind}(s): {_name_list(removed)}")
+                changes.append("; ".join(parts))
+            else:
+                # Content changed but the name set didn't - a stat or skill
+                # tweak on entries that were already there.
+                changes.append(f"{kind} data updated (stats/skills changed, no new names)")
+
     if not written:
         return {"ok": True, "changed": False,
                 "summary": "Already up to date - site data matches current files.",
-                "details": details, "error": None}
+                "details": details, "changes": [], "error": None}
     return {"ok": True, "changed": True,
             "summary": f"Updated: {', '.join(written)}.",
-            "details": details, "error": None}
+            "details": details, "changes": changes, "error": None}
+
+
+def _name_list(names, limit: int = 12) -> str:
+    # A readable, comma-joined name list, capped so a huge first-run diff
+    # doesn't flood the log.
+    if len(names) <= limit:
+        return ", ".join(names)
+    return ", ".join(names[:limit]) + f", and {len(names) - limit} more"
 
 
 def _now() -> str:
@@ -505,8 +546,13 @@ def main() -> int:
                     help="directory holding unitInfo.js / equipInfo.js (default: repo root)")
     ap.add_argument("--dry-run", action="store_true",
                     help="fetch, parse and validate but do not write any file")
-    ap.add_argument("--loop", type=int, default=0, metavar="MINUTES",
-                    help="run forever: fetch, then re-check every MINUTES (0 = run once and exit)")
+    # Bare --loop means the default cadence, once a day. The site publishes new
+    # units and equips in batches, not continuously, so checking more often than
+    # that is just traffic - pass an explicit --loop N if you want it anyway.
+    ap.add_argument("--loop", type=int, nargs="?", default=0, const=DEFAULT_LOOP_MINUTES,
+                    metavar="MINUTES",
+                    help=f"run forever: fetch, then re-check every MINUTES "
+                         f"(bare --loop = every {DEFAULT_LOOP_MINUTES // 60}h; omit entirely to run once and exit)")
     args = ap.parse_args()
 
     try:
@@ -515,6 +561,8 @@ def main() -> int:
             result = run_update(target_dir=args.dir, dry_run=args.dry_run)
             for line in result["details"]:
                 print(f"[{_now()}] OK {line}")
+            for line in result.get("changes") or []:
+                print(f"[{_now()}]    - {line}")
             status = "DONE" if result["ok"] else "ERROR"
             print(f"[{_now()}] {status} {result['summary']}")
             if not result["ok"]:
@@ -524,7 +572,9 @@ def main() -> int:
                 if not result["ok"]:
                     return 2 if result["summary"].startswith("Fetch") else 1
                 return 0
-            print(f"[{_now()}] Sleeping {args.loop} min ...")
+            nap = (f"{args.loop // 60}h" if args.loop >= 60 and args.loop % 60 == 0
+                   else f"{args.loop} min")
+            print(f"[{_now()}] Sleeping {nap} ...")
             time.sleep(args.loop * 60)
     except KeyboardInterrupt:
         print(f"[{_now()}] Stopped.")

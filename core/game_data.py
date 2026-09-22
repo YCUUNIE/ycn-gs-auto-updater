@@ -4,7 +4,6 @@
 
 import re
 import sys
-import difflib
 from typing import Dict, List, Optional
 
 from discord import app_commands
@@ -401,46 +400,3 @@ def build_name_autocomplete(current: str, names: List[str], names_lower: List[st
         picks = starts + contains
 
     return [app_commands.Choice(name=choice_name, value=choice_name) for choice_name in picks[:25]]
-
-# The word -> names index each fuzzy match needs, built once per roster
-# rather than rebuilt on every call. Keyed by the list itself plus
-# DATA_VERSION, so a reload (which refills the lists in place, leaving
-# their identity unchanged) still invalidates it.
-_word_index_cache: Dict[int, tuple] = {}
-
-def _word_index(names: List[str]) -> tuple:
-    cached = _word_index_cache.get(id(names))
-    if cached and cached[0] == DATA_VERSION:
-        return cached[1], cached[2]
-
-    word_to_names: Dict[str, List[str]] = {}
-    for name in names:
-        for word in re.split(r"\s+", name.strip()):
-            word_lower = word.lower()
-            if len(word_lower) >= 3:
-                word_to_names.setdefault(word_lower, []).append(name)
-    vocabulary = list(word_to_names.keys())
-
-    _word_index_cache[id(names)] = (DATA_VERSION, word_to_names, vocabulary)
-    return word_to_names, vocabulary
-
-def fuzzy_match_names(query_words: List[str], names: List[str], cutoff: float = 0.82, limit: int = 5) -> List[str]:
-    """Typo-tolerant name matching for chat_reply.py's natural-language
-    /unit and /equip lookups. Fuzzy-matches each query word against every
-    individual word of every name - not the full name string, which
-    fuzzy-matches poorly for a multi-word name like "Summer Juno" against
-    a bare typed "juno" or a misspelled "jouno" - and returns the owning
-    full names, most relevant first. Deliberately a fallback only: callers
-    should try exact/substring matching first (see
-    ask_data._find_matching_names(), the fast/precise path this
-    complements) since it can't produce false-typo matches the way this
-    can."""
-    word_to_names, vocabulary = _word_index(names)
-
-    matched_names: List[str] = []
-    for query_word in query_words:
-        for close_word in difflib.get_close_matches(query_word, vocabulary, n=limit, cutoff=cutoff):
-            for name in word_to_names[close_word]:
-                if name not in matched_names:
-                    matched_names.append(name)
-    return matched_names[:limit]

@@ -57,12 +57,21 @@ Only *then* does it:
 - Write the new `unitInfo.js` / `equipInfo.js`
 - Clear the parse cache so a running bot re-reads fresh
 - And it **only writes if the data actually changed** — an identical day does nothing
+- When it does write, it reports **which units and equips were added or removed, by name**
 
 If *anything* fails at any step, your existing files are left exactly as they were.
 
 ### Running it on a schedule
 
-The code runs 24/7, checks every 60 minutes, forever — it only writes when the data actually changed.
+Run it with `--loop` and it stays up, re-checking **every 24 hours**, forever — and still only writing when the data actually changed:
+
+```
+python update_game_data.py --loop          # every 24 hours
+python update_game_data.py --loop 360      # or pick your own, in minutes
+python update_game_data.py                 # or just once, right now
+```
+
+Daily is the sane default: the site publishes new units and equips in batches, not continuously, so a tighter loop is traffic without data. When something does change, the log names it — `added 2 unit(s): Silvia, Zilva` — rather than leaving you to diff two files yourself.
 
 ---
 
