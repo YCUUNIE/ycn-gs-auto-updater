@@ -196,10 +196,16 @@ class _SiteArrayParser(js_parser.JsObjectLiteralParser):
 SITE = "https://www.grandsummoners.info"
 UA = "Mozilla/5.0 (GrandSummonersBot data updater; contact: bot maintainer)"
 
-# (site_var, out_file, bot_const_name, min_expected)
+# (marker_keys, out_file, bot_const_name, min_expected)
+#
+# The bundle binds each array to a minified one- or two-letter name, and the
+# minifier reassigns those names on every site rebuild - equips went from "au"
+# to "su" in Sept 2026 and every run failed until this was changed. So we don't
+# look for a name at all. Each target lists a few keys that only that dataset's
+# records carry at the top level, and we match on those.
 TARGETS = [
-    ("Nb", "unitInfo.js", "UnitInformation", 400),
-    ("au", "equipInfo.js", "EquipInformation", 400),
+    (("name", "attribute", "tier"), "unitInfo.js", "UnitInformation", 400),
+    (("name", "location", "star"), "equipInfo.js", "EquipInformation", 400),
 ]
 
 # Refuse a fetch with fewer than this fraction of the current record count
@@ -223,14 +229,29 @@ def find_main_bundle_url(html: str) -> str:
     return SITE + m.group(0)
 
 
-def extract_array_literal(bundle: str, var_name: str) -> str:
-    # Return the raw '[ ... ]' text of `<var_name>=[{...}]`, matched by walking
-    # brackets so nested brackets and brackets inside strings are handled.
-    m = re.search(r'\b' + re.escape(var_name) + r'=\[\{', bundle)
-    if not m:
-        raise RuntimeError(f"could not find array '{var_name}=[{{' in the bundle")
+# The real datasets are ~1.5MB each. The bundle's other array literals - nav
+# links, tier labels, dropdown options - are a few hundred bytes, so anything
+# this small is noise, not data.
+_MIN_DATA_ARRAY_CHARS = 10000
 
-    start = m.end() - 2  # the opening '['
+# How far into a literal we look for the marker keys. Comfortably more than one
+# record, so a record missing an optional key doesn't cost us the match.
+_SIGNATURE_HEAD_CHARS = 4000
+
+_ARRAY_START_RE = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]*)=\[\{")
+
+
+def _marker_key_re(key: str) -> "re.Pattern":
+    # Match `key:` used as an object key - quoted or not, opening an object or
+    # following a comma - so we don't match it as a substring of some other
+    # identifier elsewhere in the minified soup.
+    return re.compile(r"""[{,]\s*["']?""" + re.escape(key) + r"""["']?\s*:""")
+
+
+def _extract_array_at(bundle: str, start: int):
+    # Walk the balanced array literal beginning at `start` (which must be its
+    # '['), respecting strings so a bracket inside a name doesn't fool us.
+    # Returns the literal text, or None if it never closes.
     i = start
     depth = 0
     n = len(bundle)
@@ -253,7 +274,43 @@ def extract_array_literal(bundle: str, var_name: str) -> str:
                 if depth == 0:
                     return bundle[start:i + 1]
         i += 1
-    raise RuntimeError(f"unterminated array literal for '{var_name}'")
+    return None
+
+
+def find_array_literal(bundle: str, signature, label: str) -> str:
+    # Find the dataset whose records carry every key in `signature`, whatever
+    # the minifier happened to call the variable this week. If more than one
+    # array qualifies, the largest wins - the real dataset dwarfs anything that
+    # could plausibly look like it.
+    markers = [_marker_key_re(k) for k in signature]
+    best = None
+    seen = []
+
+    for m in _ARRAY_START_RE.finditer(bundle):
+        start = m.end() - 2  # the opening '['
+        head = bundle[start:start + _SIGNATURE_HEAD_CHARS]
+        if not all(mk.search(head) for mk in markers):
+            seen.append(m.group(1))
+            continue
+        literal = _extract_array_at(bundle, start)
+        if literal is None:
+            seen.append(m.group(1) + " (unterminated)")
+            continue
+        if len(literal) < _MIN_DATA_ARRAY_CHARS:
+            seen.append(m.group(1) + f" ({len(literal)} chars, too small)")
+            continue
+        if best is None or len(literal) > len(best[1]):
+            best = (m.group(1), literal)
+
+    if best is None:
+        # Name every array we found and rejected, so the next diagnosis starts
+        # with evidence instead of a guess.
+        raise RuntimeError(
+            f"no array in the bundle has records with all of {list(signature)} - "
+            f"the site's data shape may have changed. "
+            f"Arrays found and rejected: {', '.join(seen) if seen else 'none'}"
+        )
+    return best[1]
 
 
 def parse_array(literal: str) -> list:
@@ -351,10 +408,10 @@ def run_update(target_dir: str = "", dry_run: bool = False) -> dict:
     # fresh unit file beside a stale equip file.
     details = []
     staged = []  # (out_path, bak_path, text, const_name, count, current)
-    for var_name, out_file, const_name, min_expected in TARGETS:
+    for signature, out_file, const_name, min_expected in TARGETS:
         out_path = os.path.join(target_dir, out_file)
         try:
-            records = parse_array(extract_array_literal(bundle, var_name))
+            records = parse_array(find_array_literal(bundle, signature, out_file))
         except (RuntimeError, js_parser.JsDataParseError, ValueError) as e:
             # JsDataParseError (and ValueError from a malformed \uXXXX escape)
             # are not RuntimeError subclasses, but mean exactly the same thing

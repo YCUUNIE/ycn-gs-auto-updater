@@ -1,6 +1,6 @@
 # YCN's auto updater script
 
-- **`update_game_data.py`** downloads the site's JavaScript data bundle and extracts it into clean `unitInfo.js` / `equipInfo.js` data files, with validation, round-trip checks against the parser, and atomic writes. It adds new data — new units and equips get added on top of what you already have, it doesn't replace the whole dataset.
+- **`update_game_data.py`** — downloads the site's JavaScript data bundle and extracts it into clean `unitInfo.js` / `equipInfo.js` data files, with validation, round-trip checks against the parser, and atomic writes. It adds new data — new units and equips get added on top of what you already have, it doesn't replace the whole dataset.
 
 ## How it works
 
@@ -14,15 +14,24 @@ The GS database site is a React app. When you open it, your browser downloads on
 
 **1. Find the current bundle**
 
-The bundle's filename has a hash in it  `main.24d01070.js` and that hash **changes every time the site updates** (which is exactly when you'd want fresh data). So the script can't hardcode the URL. It first fetches the site's homepage HTML, reads the *current* `main.<hash>.js` filename out of it, then downloads that. Always points at the live bundle, never a stale one.
+The bundle's filename has a hash in it — `main.24d01070.js` — and that hash **changes every time the site updates** (which is exactly when you'd want fresh data). So the script can't hardcode the URL. It first fetches the site's homepage HTML, reads the *current* `main.<hash>.js` filename out of it, then downloads that. Always points at the live bundle, never a stale one.
 
 **2. Extract the two arrays**
 
-Inside the ~3.9MB bundle, units live in a variable `Nb=[...]` and equips in `au=[...]`. The script finds each one and walks bracket-by-bracket (respecting strings, so a `]` inside a name doesn't fool it) to grab the exact `[ ... ]` block.
+Inside the ~3.9MB bundle, the unit and equip databases are each bound to a variable — but a *minified* one, a throwaway one- or two-letter name the site's build tool reassigns every time it rebuilds. Equips were `au` until Sept 2026, when a rebuild renamed them to `su` and every update failed until the script stopped caring about names.
+
+So it doesn't look for a name. It scans every array literal in the bundle and identifies the two it wants by **the shape of their records** — the keys they carry:
+
+- units: `name` + `attribute` + `tier`
+- equips: `name` + `location` + `star`
+
+Anything under 10,000 characters is ignored as noise (the bundle's nav-link and dropdown arrays are a few hundred bytes; the real datasets are ~1.5MB each), and if more than one array somehow qualifies, the largest wins. Once a match is found the script walks it bracket-by-bracket (respecting strings, so a `]` inside a name doesn't fool it) to grab the exact `[ ... ]` block.
+
+Field names can change too, of course. If they ever do, the fix is to update those marker keys — and the error message lists every array it found and rejected, so you can see what the records look like now.
 
 **3. Parse it**
 
-This is the tricky part. The site's code is **minified** compressed in ways hand-written files never are:
+This is the tricky part. The site's code is **minified** — compressed in ways hand-written files never are:
 
 - Floats written as `.52` instead of `0.52`
 - Numbers like `3e3` instead of `3000`
@@ -30,7 +39,7 @@ This is the tricky part. The site's code is **minified** compressed in ways hand
 - Unicode as `\u03a9` (that's the `Ω` in "EDEN-typeΩ"), including split emoji
 - One unit even built piece-by-piece with a helper function instead of written plainly
 
-The script reuses **the parser in this repo** (`core/js_parser.py`) and teaches it to understand all those minified forms without changing the parser itself. So whatever the script can read, anything using `core/game_data.py` can too.
+The script reuses **the parser in this repo** (`core/js_parser.py`) and teaches it to understand all those minified forms — without changing the parser itself. So whatever the script can read, anything using `core/game_data.py` can too.
 
 **4. Validate before touching anything — this is the safety net**
 
@@ -39,7 +48,7 @@ Nothing gets written until the fresh data passes every check:
 - Both arrays parsed to non-empty lists
 - Every record has an id and a name
 - The count is within 70% of what's already on disk (a sudden collapse = a partial download or the site broke → refuse)
-- The generated file is **round-tripped back through the parser** to confirm the same record count if it couldn't be loaded again, it's rejected
+- The generated file is **round-tripped back through the parser** to confirm the same record count — if it couldn't be loaded again, it's rejected
 
 **5. The script will write carefully**
 
@@ -47,13 +56,13 @@ Only *then* does it:
 
 - Write the new `unitInfo.js` / `equipInfo.js`
 - Clear the parse cache so a running bot re-reads fresh
-- And it **only writes if the data actually changed** an identical day does nothing
+- And it **only writes if the data actually changed** — an identical day does nothing
 
 If *anything* fails at any step, your existing files are left exactly as they were.
 
 ### Running it on a schedule
 
-The code runs 24/7, checks every 60 minutes, forever, it only writes when the data actually changed.
+The code runs 24/7, checks every 60 minutes, forever — it only writes when the data actually changed.
 
 ---
 
@@ -65,7 +74,7 @@ Want to look at the exact file the script reads? It's just a normal request in y
 
 1. Open [grandsummoners.info](https://www.grandsummoners.info) in your browser.
 2. Press **F12** (or right-click the page → **Inspect**) to open DevTools, then click the **Network** tab.
-3. Refresh the page so the requests appear, and find **`main.<hash>.js`** in the list e.g. `main.24d01070.js`. (Clicking the **JS** filter button makes it easier to spot.)
-4. Click that row and open the **Response** tab — that's the full bundle, the same one the script downloads. It's minified (one long line of compressed code), which is why it's hard to read directly. Search it (`Ctrl+F`) for `Nb=` and you'll land right on the unit data array; `au=` is the equips.
+3. Refresh the page so the requests appear, and find **`main.<hash>.js`** in the list — e.g. `main.24d01070.js`. (Clicking the **JS** filter button makes it easier to spot.)
+4. Click that row and open the **Response** tab — that's the full bundle, the same one the script downloads. It's minified (one long line of compressed code), which is why it's hard to read directly. Search it (`Ctrl+F`) for `attribute:` and you'll land in the unit data; `location:` puts you in the equips. (Searching for the variable names themselves — `Nb=`, `au=`, `su=` — only works until the next rebuild renames them.)
 
 The **Headers** tab shows the same request URL the script builds from the homepage HTML: `https://www.grandsummoners.info/static/js/main.<hash>.js`.
